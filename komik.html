@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Comic Page Exporter (Auto Split Spread)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: #1a1a1a;
+            color: #fff;
+            margin: 0;
+            padding: 20px;
+        }
+        .container { max-width: 900px; margin: 0 auto; }
+        h1 { text-align: center; color: #4285f4; margin-bottom: 5px; }
+        p.subtitle { text-align: center; color: #80868b; margin-bottom: 20px; }
+        .upload-zone {
+            border: 2px dashed #4285f4;
+            padding: 20px;
+            text-align: center;
+            border-radius: 12px;
+            background: #202124;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+        .action-bar {
+            background: #202124;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex; gap: 15px; align-items: center; justify-content: center; flex-wrap: wrap;
+        }
+        button {
+            padding: 10px 20px; font-size: 15px; border-radius: 6px; font-weight: bold;
+            border: none; background-color: #4285f4; color: white; cursor: pointer; transition: 0.2s;
+        }
+        button:hover { background-color: #357ae8; }
+        button:disabled { background-color: #3c4043; cursor: not-allowed; color: #80868b; }
+        .btn-download { background-color: #34a853; }
+        .btn-download:hover { background-color: #2c8a46; }
+        .viewer-box {
+            background: #202124;
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+        }
+        .canvas-container {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin: 15px 0;
+            flex-wrap: wrap;
+        }
+        canvas {
+            display: block;
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+            background: #fff;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+        }
+        .canvas-box {
+            text-align: center;
+        }
+        .canvas-label {
+            font-size: 12px;
+            color: #80868b;
+            margin-top: 5px;
+            font-weight: bold;
+        }
+        .nav-buttons { display: flex; justify-content: space-between; align-items: center; margin-top: 15px; }
+        .nav-btn { background-color: #3c4043; }
+        .nav-btn:hover { background-color: #4f5256; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Comic Page Exporter Pro</h1>
+    <p class="subtitle">Otomatis memotong halaman double (spread) menjadi 1 halaman pas untuk Google Translate</p>
+    
+    <div class="upload-zone" onclick="document.getElementById('fileInput').click()">
+        <p>Klik di sini untuk membuka file <b>PDF / CBZ Komik</b></p>
+        <input type="file" id="fileInput" accept=".pdf, .cbz" style="display:none">
+        <div id="fileName" style="color: #4285f4; font-weight: bold; margin-top: 5px;"></div>
+    </div>
+
+    <div class="action-bar" id="actionBar">
+        <button id="downloadSingleBtn" class="btn-download" disabled>💾 Unduh Halaman (.PNG)</button>
+        <button id="downloadLeftBtn" class="btn-download" style="display: none;">💾 Unduh Halaman Kiri (.PNG)</button>
+        <button id="downloadRightBtn" class="btn-download" style="display: none;">💾 Unduh Halaman Kanan (.PNG)</button>
+    </div>
+
+    <div class="viewer-box">
+        <div class="canvas-container">
+            <div class="canvas-box">
+                <canvas id="comicCanvas"></canvas>
+                <div id="canvasLabelLeft" class="canvas-label" style="display: none;">Halaman Kiri</div>
+            </div>
+            <div class="canvas-box" id="rightCanvasBox" style="display: none;">
+                <canvas id="comicCanvasRight"></canvas>
+                <div class="canvas-label">Halaman Kanan</div>
+            </div>
+        </div>
+        <div class="nav-buttons">
+            <button id="prevBtn" class="nav-btn" disabled>◀ Halaman Sebelumnya</button>
+            <span id="pageInfo">Belum ada file yang dimuat</span>
+            <button id="nextBtn" class="nav-btn" disabled>Halaman Berikutnya ▶</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+
+    const fileInput = document.getElementById('fileInput');
+    const canvasLeft = document.getElementById('comicCanvas');
+    const ctxLeft = canvasLeft.getContext('2d');
+    const canvasRight = document.getElementById('comicCanvasRight');
+    const ctxRight = canvasRight.getContext('2d');
+    
+    const rightCanvasBox = document.getElementById('rightCanvasBox');
+    const canvasLabelLeft = document.getElementById('canvasLabelLeft');
+    
+    const downloadSingleBtn = document.getElementById('downloadSingleBtn');
+    const downloadLeftBtn = document.getElementById('downloadLeftBtn');
+    const downloadRightBtn = document.getElementById('downloadRightBtn');
+    
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const pageInfo = document.getElementById('pageInfo');
+
+    let pdfDoc = null;
+    let cbzImages = [];
+    let pageNum = 1;
+    let totalPages = 0;
+    let currentFileType = "";
+
+    fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        document.getElementById('fileName').textContent = file.name;
+        pdfDoc = null; cbzImages = []; 
+        disableButtons();
+
+        const fileExtension = file.name.split('.').pop().toLowerCase();
+
+        if (fileExtension === "pdf") {
+            currentFileType = "pdf";
+            const fileReader = new FileReader();
+            fileReader.onload = async function() {
+                try {
+                    const typedarray = new Uint8Array(this.result);
+                    pdfDoc = await pdfjsLib.getDocument(typedarray).promise;
+                    pageNum = 1; totalPages = pdfDoc.numPages;
+                    renderPdfPage(pageNum);
+                } catch (err) { alert("Gagal memuat PDF."); }
+            };
+            fileReader.readAsArrayBuffer(file);
+        } else if (fileExtension === "cbz" || fileExtension === "zip") {
+            currentFileType = "cbz";
+            const fileReader = new FileReader();
+            fileReader.onload = async function(event) {
+                try {
+                    const zip = await JSZip.loadAsync(event.target.result);
+                    const imagePromises = [];
+                    zip.forEach((relativePath, zipEntry) => {
+                        if (!zipEntry.dir && /\.(png|jpg|jpeg|gif|webp)$/i.test(zipEntry.name)) {
+                            imagePromises.push(zipEntry.async("base64").then(base64 => {
+                                return { name: zipEntry.name, data: "data:image/png;base64," + base64 };
+                            }));
+                        }
+                    });
+                    const resolvedImages = await Promise.all(imagePromises);
+                    cbzImages = resolvedImages.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true})).map(img => img.data);
+                    pageNum = 1; totalPages = cbzImages.length;
+                    renderCbzPage(pageNum);
+                } catch (err) { alert("Gagal memuat CBZ."); }
+            };
+            fileReader.readAsArrayBuffer(file);
+        }
+    });
+
+    function disableButtons() {
+        downloadSingleBtn.disabled = true;
+        downloadSingleBtn.style.display = "inline-block";
+        downloadLeftBtn.style.display = "none";
+        downloadRightBtn.style.display = "none";
+        rightCanvasBox.style.display = "none";
+        canvasLabelLeft.style.display = "none";
+    }
+
+    async function renderPdfPage(num) {
+        disableButtons();
+        const page = await pdfDoc.getPage(num);
+        const viewport = page.getViewport({ scale: 2.0 }); 
+        
+        // Cek apakah halaman PDF bertipe landscape (lebar > tinggi)
+        if (viewport.width > viewport.height) {
+            handleDoublePageSpread(viewport.width, viewport.height, async (tempCanvas) => {
+                await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
+            });
+        } else {
+            // Halaman normal/tunggal
+            canvasLeft.height = viewport.height; canvasLeft.width = viewport.width;
+            await page.render({ canvasContext: ctxLeft, viewport: viewport }).promise;
+            downloadSingleBtn.disabled = false;
+        }
+        updateNav();
+    }
+
+    function renderCbzPage(num) {
+        disableButtons();
+        const img = new Image();
+        img.onload = function() {
+            // Cek apakah gambar CBZ bertipe melebar (double page spread)
+            if (img.width > img.height * 1.2) {
+                handleDoublePageSpread(img.width, img.height, (tempCanvas) => {
+                    tempCanvas.getContext('2d').drawImage(img, 0, 0);
+                });
+            } else {
+                // Halaman normal/tunggal
+                canvasLeft.width = img.width; canvasLeft.height = img.height;
+                ctxLeft.drawImage(img, 0, 0);
+                downloadSingleBtn.disabled = false;
+            }
+            updateNav();
+        };
+        img.src = cbzImages[num - 1];
+    }
+
+    // Fungsi inti memotong gambar landscape tengah-tengah menjadi dua bagian
+    function handleDoublePageSpread(fullWidth, fullHeight, drawOnTempCanvasCallback) {
+        const halfWidth = fullWidth / 2;
+
+        // Gunakan canvas bantuan tersembunyi untuk memuat gambar utuh terlebih dahulu
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = fullWidth;
+        tempCanvas.height = fullHeight;
+
+        // Jalankan proses gambar murni ke canvas bantuan
+        setTimeout(() => {
+            drawOnTempCanvasCallback(tempCanvas);
+
+            // Set dimensi potongan halaman kiri & kanan
+            canvasLeft.width = halfWidth; canvasLeft.height = fullHeight;
+            canvasRight.width = halfWidth; canvasRight.height = fullHeight;
+
+            // Potong bagian Kiri (koordinat x mulai dari 0)
+            ctxLeft.drawImage(tempCanvas, 0, 0, halfWidth, fullHeight, 0, 0, halfWidth, fullHeight);
+            // Potong bagian Kanan (koordinat x mulai dari halfWidth)
+            ctxRight.drawImage(tempCanvas, halfWidth, 0, halfWidth, fullHeight, 0, 0, halfWidth, fullHeight);
+
+            // Atur tampilan UI interface agar memunculkan dua pilihan download
+            downloadSingleBtn.style.display = "none";
+            downloadLeftBtn.style.display = "inline-block";
+            downloadRightBtn.style.display = "inline-block";
+            rightCanvasBox.style.display = "block";
+            canvasLabelLeft.style.display = "block";
+        }, 100);
+    }
+
+    // Tombol Handler Unduh
+    downloadSingleBtn.addEventListener('click', () => downloadCanvas(canvasLeft, `Halaman_${pageNum}`));
+    downloadLeftBtn.addEventListener('click', () => downloadCanvas(canvasLeft, `Halaman_${pageNum}_Kiri`));
+    downloadRightBtn.addEventListener('click', () => downloadCanvas(canvasRight, `Halaman_${pageNum}_Kanan`));
+
+    function downloadCanvas(targetCanvas, filenameSuffix) {
+        const imageURL = targetCanvas.toDataURL("image/png");
+        const downloadLink = document.createElement('a');
+        downloadLink.href = imageURL;
+        downloadLink.download = `Komik_${filenameSuffix}.png`;
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+    }
+
+    function updateNav() {
+        prevBtn.disabled = pageNum <= 1;
+        nextBtn.disabled = pageNum >= totalPages;
+        pageInfo.textContent = `Halaman: ${pageNum} / ${totalPages}`;
+    }
+
+    prevBtn.addEventListener('click', () => {
+        if (pageNum <= 1) return;
+        pageNum--;
+        if(currentFileType === "pdf") renderPdfPage(pageNum);
+        if(currentFileType === "cbz") renderCbzPage(pageNum);
+    });
+
+    nextBtn.addEventListener('click', () => {
+        if (pageNum >= totalPages) return;
+        pageNum++;
+        if(currentFileType === "pdf") renderPdfPage(pageNum);
+        if(currentFileType === "cbz") renderCbzPage(pageNum);
+    });
+</script>
+
+</body>
+</html>
